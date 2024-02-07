@@ -39,43 +39,37 @@ library(remotes)
 
 # install.packages("groundhog")
 library("groundhog")
+groundhog.day="2020-05-12"
 #Dowloaded fromn https://github.com/CredibilityLab/groundhog
 
-# pkgs <- c("INLA")
-# groundhog.library(pkgs
-#                   , "2020-04-24"
-#                   , tolerate.R.version='4.0.2'
-#                   # , force.install=TRUE
-#                   , ignore.deps=FALSE
-#                   )
+#ONLY install once
+# remotes::install_version("INLA"
+#                          , version="20.05.12"
+#                          , repos=c(getOption("repos")
+#                          , INLA="https://inla.r-inla-download.org/R/testing")
+#                          , dep=FALSE
+#                          , quiet = FALSE
+#                          , method="curl"
+#                          # , mode="wb"
+#                          , type="source"
+#                         )
+# 
+# install_github("menglezhang/socialfrontiers@v0.2",
+#                build_opts = c("--no-resave-data", 
+#                               "--no-manual"), 
+#                build_vignettes = FALSE)
+library("socialFrontiers")
+library("INLA")
 
+pkgs = c("here", "dplyr", "tidyverse", "janitor", "sf"
+       , "tmap", "devtools", "renv", "Hmisc")
 
-#install.packages("remotes")
-#install.packages("Rcpp")
-#remotes::install_github("rspatial/terra")
-#install.packages("BiocManager")
+groundhog.library(pkgs, groundhog.day)
 
-remotes::install_version("INLA"
-                         , version="20.05.12"
-                         , repos=c(getOption("repos")
-                         , INLA="https://inla.r-inla-download.org/R/testing")
-                         , dep=FALSE
-                         , quiet = FALSE
-                         , method="curl"
-                         # , mode="wb"
-                         , type="source"
-                        )
+#!!!POTENTIAL PROBLEMATIC DEPENDENCIES:
+#Checkmate->htmlTable->Hmisc
 
-install_github("menglezhang/socialfrontiers@v0.2",
-               build_opts = c("--no-resave-data", 
-                              "--no-manual"), 
-               build_vignettes = FALSE)
-
-pacman::p_load(here, dplyr, tidyverse, janitor, sf, Hmisc
-               , socialFrontiers, tmap, devtools)
-
-
-## Program Set-up ------------
+## Program Set-up ------------------------------------------------------------
 
 options(scipen = 100, digits = 4) # Prefer non-scientific notation
 # renv::snapshot()
@@ -83,13 +77,21 @@ options(scipen = 100, digits = 4) # Prefer non-scientific notation
 set.seed(4183) # See https://www.gigacalculator.com/calculators/random-number-generator.php
 theme_set(theme_minimal())
 
-## Runs the following --------
+## Runs the following --------------------------------------------------------
+# 1. Installs INLA and SF packages
+# 2. Upload block level data from Lima, Census 2017.
+# 3. Applies SF to data
+
 
 ## Import and clean data -------------------------------------------------------
 # read_sf() and st_read(). They are the same apart from converting character 
 # data to factors, read_sf() uses stringsAsFactors = FALSE by default.
+# AND convert it to a CRS that is projected.
+# Help picking an appropriate CRS:Using https://projectionwizard.org/
 
-data <- st_read("data/LimaMet/EstratoLimaMetropolitanashp.shp")
+data <- st_read("data/LimaMet/EstratoLimaMetropolitanashp.shp") %>% 
+  st_transform(crs = 32718) #18s zone (EPSG: 32718) 
+
 
 # Simple feature collection with 106688 features and 196 fields
 # Geometry type: MULTIPOLYGON
@@ -116,7 +118,7 @@ describe(data$POBRE_SUP)
 
 hist(data$POBRE_SUP, freq = FALSE)
 
-plot(  st_geometry(data["POBRE_SUP"])
+plot(   st_geometry(data["POBRE_SUP"])
      # , col = sf.colors(  n = 5
      #                   , alpha = 1
      #                   , categorical = FALSE)
@@ -130,46 +132,50 @@ plot(  st_geometry(st_centroid(data))
      , col = 'red'
      , add = TRUE
      )
-# Error in wk_handle.wk_wkb(wkb, s2_geography_writer(oriented = oriented,  : 
-# Loop 0 is not valid: Edge 16 is degenerate (duplicate vertex)
-# In addition: Warning message:
-# st_centroid assumes attributes are constant over geometries 
 
-
-
-##  Filter to the district of SJL
+#  Filter to the district of SJL
 SJL <- data %>%
        filter(IDDIST == 150132)
 
 
-#  Using frontier_detect to find frontiers
+##Using frontier_detect to find frontiers-------------------------------------------------------
 
-Only method for finding frontiers is the localised binomial model
-used in Dean et al. The model needs total counts of an event occuring
-(e.g. number of non-UK-born residents) and the total number of trials (e.g. 
-                                                                       total number of residents). The name of the variables denoting the column containing
-these counts must be entered as a string.
+# Only method for finding frontiers is the localised binomial model
+# used in Dean et al. The model needs total counts of an event occuring
+# (e.g. number of non-UK-born residents) and the total number of trials
+# (e.g. total number of residents). The name of the variables denoting the column 
+# containing these counts must be entered as a string.
 
-~
-# set parameters}
-y <- 'nonUK' # 'nonUK' # Number of foreign
-n.trials <- 'totalPop' #total population (per zone?)
+# set parameters
+y <- 'POBRE_SUP' # Number of persons in poverty, official income definition
+n.trials <- 'POP' #total population (per block)
 
 
-Now we run the frontier_detect routine. You can see the underlying code used 
-for the statistical model in using socialFrontiers:::binomial_localisedINLA.
+# Now we run the frontier_detect routine. You can see the underlying code used 
+# for the statistical model in using socialFrontiers:::binomial_localisedINLA.
 
+#!!!POTENTIAL PROBLEMATIC ISSUE:
+# #Put _SF_USE_S2=false in usethis::edit_r_environ()
+# getOption("sf_use_s2", default = FALSE) #Turn off the s2 processing, otherwise getting:
+# #Error in sf_use_s2() : could not find function "sf_use_s2"
+# getOption("sf_use_s2") #Check if it is on or off
 
 frontier_model <-
   frontier_detect(
-    data = barnet,
+    data = data,
     y = y, n.trials = n.trials)
+
+#!!!ERROR:
+# Error in nb2listw(neighbours, glist = glist, style = style, zero.policy = zero.policy) : 
+#   Empty neighbour sets found
+# In addition: Warning message:
+#   In frontier_detect(data = data, y = y, n.trials = n.trials) :
+#   106560 zone(s) have no neighbours!
 
 class(frontier_model) # Outputs a frontier_model object
 
-
-The output saves as a 'frontier_model' object which can be used with other
-methods such as summary.
+# The output saves as a 'frontier_model' object which can be used with other
+# methods such as summary.
 
 ## Methods for use with the frontier_model object
 
@@ -180,9 +186,9 @@ summary(frontier_model) ## This calls up summary.frontier_model
 
 ### graphing and gis methods
 
-We can extract the frontier (as well as non-frontier) borders as a sf object for
-further graphing or gis methods using frontier_as_sf. Note that this function
-throws up ignorable warnings that come from using sf::st_intersects.
+# We can extract the frontier (as well as non-frontier) borders as a sf object for
+# further graphing or gis methods using frontier_as_sf. Note that this function
+# throws up ignorable warnings that come from using sf::st_intersects.
 
 
 suppressWarnings(borders_sf <-
