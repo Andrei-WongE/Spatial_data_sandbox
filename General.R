@@ -92,29 +92,28 @@ theme_set(theme_minimal())
 data <- st_read("data/LimaMet/EstratoLimaMetropolitanashp.shp") %>% 
   st_transform(crs = 32718) #18s zone (EPSG: 32718) 
 
-
-# Simple feature collection with 106688 features and 196 fields
-# Geometry type: MULTIPOLYGON
-# Dimension:     XY
-# Bounding box:  xmin: -77.2 ymin: -12.5 xmax: -76.67 ymax: -11.73
-# Geodetic CRS:  WGS 84
+    # Simple feature collection with 106688 features and 196 fields
+    # Geometry type: MULTIPOLYGON
+    # Dimension:     XY
+    # Bounding box:  xmin: -77.2 ymin: -12.5 xmax: -76.67 ymax: -11.73
+    # Geodetic CRS:  WGS 84
 
 st_layers("data/LimaMet/EstratoLimaMetropolitanashp.shp")
 
 # Using variable POBRE_SUP:
 
 describe(data$POBRE_SUP)
-# n  missing distinct     Info 
-# 106688        0       61    0.968 
-# Mean      Gmd      .05      .10 
-# 17.85    17.64     0.00     0.00 
-# .25      .50      .75      .90 
-# 0.00    16.38    31.13    41.09 
-# .95 
-# 41.09 
-# 
-# lowest : 0       2.36948 2.4496  6.24318 6.89766
-# highest: 42.0976 44.916  46.2188 47.6525 57.7417
+    # n  missing distinct     Info 
+    # 106688        0       61    0.968 
+    # Mean      Gmd      .05      .10 
+    # 17.85    17.64     0.00     0.00 
+    # .25      .50      .75      .90 
+    # 0.00    16.38    31.13    41.09 
+    # .95 
+    # 41.09 
+    # 
+    # lowest : 0       2.36948 2.4496  6.24318 6.89766
+    # highest: 42.0976 44.916  46.2188 47.6525 57.7417
 
 hist(data$POBRE_SUP, freq = FALSE)
 
@@ -160,6 +159,94 @@ n.trials <- 'POP' #total population (per block)
 # #Error in sf_use_s2() : could not find function "sf_use_s2"
 # getOption("sf_use_s2") #Check if it is on or off
 
+# Contiguity neighbours for polygon support:
+
+#Using spatial indices to check intersection of polygons is much faster than
+#the legacy method in poly2nb
+# poly2nb uses two heuristics, first to find candidate neighbours from intersecting
+# polygons (st_intersects()), and second to use the symmetry of the relationship 
+# to halve the number of remaining tests. This means that performance is linear 
+# in n, but with overhead for identifying candidates, and back-filling symmetric 
+# neighbours. Further, spdep::poly2nb() stops searching for queen contiguity as 
+# soon as the first neighbour point is found within snap distance (if not identical,
+# which is tested first); a second neighbour point indicates rook contiguities.
+
+reps <- 10
+eps <- sqrt(.Machine$double.eps)
+system.time(for(i in 1:reps) neighb <- spdep::poly2nb( data
+                                                     , queen=TRUE
+                                                     , snap=eps
+                                                     )
+           )/reps
+                                      
+      # user  system elapsed 
+      # 9.859   0.151  18.85
+neighb
+
+#  poly2nb function defaulting to the queen criterion
+      # Neighbour list object:
+      #   Number of regions: 106688 
+      #   Number of nonzero links: 168  
+      #   Percentage nonzero weights: 0.000001476 
+      #   Average number of links: 0.001575 
+
+spdep::is.symmetric.nb(neighb)
+                       
+# coords <- st_coordinates(st_centroid(st_geometry(data)))
+coords <- st_coordinates(data)
+
+plot(neighb, coords, col="grey", add = TRUE)
+
+# Contiguity neighbours from invalid polygons:
+
+# explore a further possible source of differences in neighbour object reproduction,
+# using the original version of the tract boundaries used in ASDAR, but with some 
+# invalid geometries as mentioned earlier
+
+# Check if file with valid geometries in to ‘sf’ and ‘sp’ objects:
+table(st_is_valid(data))
+    
+    # FALSE   TRUE 
+    # 14      106674
+
+# Using st_make_valid() to make the geometries valid:
+
+data_clean <- st_make_valid(data)
+table(st_is_valid(data_clean))
+    
+    # TRUE 
+    # 106688
+
+# Differences in geometry type
+
+class(st_geometry(data))
+    # [1] "sfc_MULTIPOLYGON"
+    # [2] "sfc" 
+class(st_geometry(data_clean))
+    # [1] "sfc_GEOMETRY" "sfc"         
+
+table(sapply(st_geometry(data), function(x) class(x)[[2]]))
+    # MULTIPOLYGON      POLYGON 
+    # 106674           14 
+
+# This can be remedied using st_collection_extract() to get the polygon objects:
+
+data_clean <- st_collection_extract(data_clean, "POLYGON")
+table(sapply(st_geometry(data_clean), function(x) class(x)[[2]]))
+
+    # MULTIPOLYGON 
+    # 106688 
+
+# However, in making the geometries valid, we change the geometries, so the new 
+# sets of neighbours still differ from those made with the valid geometries in 
+# the same ways as before imposing validity:
+
+all.equal(data, data_clean, check.attributes=FALSE) # There are 569 differences
+
+# set.ZeroPolicyOption(TRUE) #To avoid subsetting
+
+#Run the model
+
 frontier_model <-
   frontier_detect(
     data = data,
@@ -171,6 +258,7 @@ frontier_model <-
 # In addition: Warning message:
 #   In frontier_detect(data = data, y = y, n.trials = n.trials) :
 #   106560 zone(s) have no neighbours!
+
 
 class(frontier_model) # Outputs a frontier_model object
 
