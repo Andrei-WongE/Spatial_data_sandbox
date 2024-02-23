@@ -38,7 +38,7 @@ pkgs = c("here", "dplyr", "tidyverse", "janitor", "sf"
          , "tmap", "devtools", "renv", "Hmisc", "ggplot2"
          , "xfun", "remotes", "sp", "spdep", "maptools"
          , "foreach", "doParallel", "parallel", "progress"
-         , "doSNOW")
+         , "doSNOW", "purrr")
 
 groundhog.library(pkgs, groundhog.day)
 
@@ -204,7 +204,7 @@ pb <- progress_bar$new(
   total = length(distance_vector),     
   width = 60)
 
-progress_letter <- rep(LETTERS[1:10], 10)
+progress_letter <- rep(LETTERS[1:11], 11)
 
 # allowing progress bar to be used in foreach
 progress <- function(n){
@@ -223,11 +223,11 @@ neighb <- foreach(i = 1:distance_vector
   
                     sink(paste0("Report_", i, ".txt")) # Open sink file for each iteration
                     
-                    result <- spdep::poly2nb(   data$geometry
-                                    , queen = TRUE
-                                    , row.names = data$id_mz
-                                    , snap = i #meters
-                                  )
+                    result <- spdep::poly2nb( data$geometry
+                                            , queen = TRUE
+                                            , row.names = data$id_mz
+                                            , snap = i #meters
+                                          )
                     print(result) 
                     
                     sink() # Close the sink
@@ -242,9 +242,24 @@ stopCluster(cl)
                                 , recursive = TRUE
                                 , full.names = TRUE)
   
+    # Read and parse the files
+    data_db <- map_df(files_to_delete, ~read_lines(.x) %>% 
+                 .[2:5] %>% # Extract the lines 2 to 5
+                 str_split_fixed(":", 2) %>% 
+                 as.data.frame(), .id = "id") %>% 
+                 pivot_wider(names_from = V1, values_from = V2) %>% 
+                mutate_all(as.numeric)      
+  
   # Delete the files
   file.remove(files_to_delete)
-
+  
+  #Plot the results
+  data_db %>%
+    ggplot(aes(x = id, y = `Number of nonzero links`, z =  )) +
+    geom_point() +
+    geom_line( color="red")
+  
+  
 # Convert the neighbors list to a binary adjacency matrix
 adj_matrix <- nb2mat(neighb, style = "B" , zero.policy = TRUE)
 
