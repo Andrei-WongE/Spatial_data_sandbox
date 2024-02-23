@@ -28,9 +28,6 @@ if (!require("pacman","groundhog")) {
 }
 
 library(pacman)
-# library(checkpoint)
-
-# checkpoint("2020-01-01")  # replace with desired date
 
 # install.packages("groundhog")
 library("groundhog")
@@ -39,7 +36,9 @@ groundhog.day = "2020-05-12"
 
 pkgs = c("here", "dplyr", "tidyverse", "janitor", "sf"
          , "tmap", "devtools", "renv", "Hmisc", "ggplot2"
-         , "xfun", "remotes", "sp", "spdep", "maptools")
+         , "xfun", "remotes", "sp", "spdep", "maptools"
+         , "foreach", "doParallel", "parallel", "progress"
+         , "doSNOW")
 
 groundhog.library(pkgs, groundhog.day)
 
@@ -93,11 +92,19 @@ theme_set(theme_minimal())
 data <- st_read("data/LimaMet/EstratoLimaMetropolitanashp.shp") %>% 
   st_transform(crs = 24892) #PSAD56 / Peru central zone
 
-    # Simple feature collection with 106688 features and 196 fields
-    # Geometry type: MULTIPOLYGON
-    # Dimension:     XY
-    # Bounding box:  xmin: -77.2 ymin: -12.5 xmax: -76.67 ymax: -11.73
-    # Geodetic CRS:  WGS 84
+  # Simple feature collection with 106688 features and 196 fields
+  # Geometry type: MULTIPOLYGON
+  # Dimension:     XY
+  # Bounding box:  xmin: -77.2 ymin: -12.5 xmax: -76.67 ymax: -11.73
+  # Geodetic CRS:  WGS 84
+
+data <- data[data$POB > 0,] #Remove rows with no population
+
+  # Simple feature collection with 90303 features and 196 fields
+  # geometry type:  MULTIPOLYGON
+  # dimension:      XY
+  # bbox:           xmin: 590800 ymin: 709200 xmax: 647400 ymax: 793900
+  # projected CRS:  PSAD56 / Peru central zone
 
 # Checks if CRS is geographic or not
 st_crs(data)$IsGeographic 
@@ -179,17 +186,67 @@ SJL <- data %>%
 data <- SJL
 rm(SJL)
 
-reps <- 10
-eps <- sqrt(.Machine$double.eps)
-system.time(for(i in 1:reps) neighb <- spdep::poly2nb( data
-                                                     , queen=TRUE
-                                                     # , snap=eps
-                                                     )
-           )/reps
-                                      
-      # user  system elapsed 
-      # 16.739   0.586  30.519 
-neighb
+# Create a neighbors list using the poly2nb function, to obtain contiguos polygons
+# the snap function is needed, but as it is arbitrary, a set of distances will be used
+
+# Parallel Processing set-up
+(num_cores <- detectCores())  # Detect total number of available cores
+num_cores <- 11     # Leave one core for the OS  
+cl <- makeCluster(num_cores)  # Create a cluster with specified number of cores
+registerDoParallel(cl)  # Register the cluster for parallel processing
+registerDoSNOW(cl)
+
+distance_vector <- 10:20 # Calculating from 10 to 20 meters as snap parameter
+
+#Progress bar
+pb <- progress_bar$new(
+  format = "letter = :letter [:bar] :elapsed | eta: :eta",
+  total = length(distance_vector),     
+  width = 60)
+
+progress_letter <- rep(LETTERS[1:10], 10)
+
+# allowing progress bar to be used in foreach
+progress <- function(n){
+  pb$tick(tokens = list(letter = progress_letter[n]))
+} 
+
+opts <- list(progress = progress)
+
+
+neighb <- foreach(i = 1:distance_vector
+                  , .combine = "+" # Cbind the result of each iteration
+                  , .inorder = TRUE
+                  , .options.snow = opts # Allows for progress bar
+                  , .packages = c("spdep", "doSNOW")
+                  ) %dopar%  {
+  
+                    sink(paste0("Report_", i, ".txt")) # Open sink file for each iteration
+                    
+                    result <- spdep::poly2nb(   data$geometry
+                                    , queen = TRUE
+                                    , row.names = data$id_mz
+                                    , snap = i #meters
+                                  )
+                    print(result) 
+                    
+                    sink() # Close the sink
+}
+            
+#Cluster of parallel processes made by the makeCluster function is stopped and shut down
+stopCluster(cl)
+
+  # Get a list of files that match the pattern
+  files_to_delete <- list.files(  path = here()
+                                , pattern = "Report_"
+                                , recursive = TRUE
+                                , full.names = TRUE)
+  
+  # Delete the files
+  file.remove(files_to_delete)
+
+# Convert the neighbors list to a binary adjacency matrix
+adj_matrix <- nb2mat(neighb, style = "B" , zero.policy = TRUE)
 
 #  poly2nb function defaulting to the queen criterion
     # Neighbour list object:
@@ -229,6 +286,14 @@ st_relate(data_clean)[,1]
 # 1 denotes a spatial intersection of dimension 1 (i.e., a line).
 
 # Function finds pattern: FF2FF1212
+
+st_queen <- function(a, b = a) st_relate(a, b, pattern = "F***T****")
+data_clean %>% mutate(NB_QUEEN = st_queen(.))
+
+
+st_rook = function(a, b = a) st_relate(a, b, pattern = "F***1****")
+data_clean %>% mutate(NB_ROOK = st_rook(.))
+
 
 # Group by link ID and union the polygons
 data_linked <- data_clean %>%
@@ -328,7 +393,7 @@ spdep::is.symmetric.nb(neighb_clean)
 # [1] FALSE
 
 # Create a vector indicating whether each polygon has at least one neighbor
-has_neighb_clean <- sapply(neighb_clean, function(x) length(x) > 0)
+has_neighb_clean <- sapply(neighb, function(x) length(x) > 0)
 
 # Subset the polygons that have at least one neighbor
 data_clean_nb <- data_clean[has_neighb_clean, ]
