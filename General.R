@@ -38,7 +38,7 @@ pkgs = c("here", "dplyr", "tidyverse", "janitor", "sf"
          , "tmap", "devtools", "renv", "Hmisc", "ggplot2"
          , "xfun", "remotes", "sp", "spdep", "maptools"
          , "foreach", "doParallel", "parallel", "progress"
-         , "doSNOW", "purrr")
+         , "doSNOW", "purrr", "patchwork")
 
 groundhog.library(pkgs, groundhog.day)
 
@@ -191,7 +191,7 @@ rm(SJL)
 
 # Parallel Processing set-up
 (num_cores <- detectCores())  # Detect total number of available cores
-num_cores <- 11     # Leave one core for the OS  
+num_cores <- 10     # Leave one core for the OS  
 cl <- makeCluster(num_cores)  # Create a cluster with specified number of cores
 registerDoParallel(cl)  # Register the cluster for parallel processing
 registerDoSNOW(cl)
@@ -240,36 +240,63 @@ stopCluster(cl)
   files_to_delete <- list.files(  path = here()
                                 , pattern = "Report_"
                                 , recursive = TRUE
-                                , full.names = TRUE)
+                                , full.names = TRUE
+                                )
+
+  #WARNING! The list.files() function returns the files in the order they are 
+  #read by the file system, which might not be sequential
   
-    # Read and parse the files
-    data_db <- map_df(files_to_delete, ~read_lines(.x) %>% 
+  files_to_delete <- files_to_delete[c(1, 3:10, 2)]
+  
+  # Read and parse the files
+  data_db <- map_df(files_to_delete, ~read_lines(.x) %>% 
                  .[2:5] %>% # Extract the lines 2 to 5
                  str_split_fixed(":", 2) %>% 
                  as.data.frame(), .id = "id") %>% 
                  pivot_wider(names_from = V1, values_from = V2) %>% 
-                mutate_all(as.numeric)      
+                 mutate_all(as.numeric)      
   
   # Delete the files
   file.remove(files_to_delete)
   
   #Plot the results
-  data_db %>%
-    ggplot(aes(x = id, y = `Number of nonzero links`, z =  )) +
-    geom_point() +
-    geom_line( color="red")
+    p1 <- data_db %>%
+          ggplot(aes(x = id, y = `Number of nonzero links` )) +
+          geom_point() +
+          scale_x_continuous(breaks = unique(data_db$id)) +
+          geom_line( color="red") +
+          scale_y_continuous(breaks = unique(data_db$`Number of nonzero links`))
+        
+    p2 <-data_db %>%
+          ggplot(aes(x = id, y =`Percentage nonzero weights`)) +
+          geom_bar(, stat = "identity"
+                   , fill = "blue"
+                   , alpha = 0.5
+                   ) +
+          scale_x_continuous(breaks = unique(data_db$id))+
+          scale_y_continuous(breaks = unique(data_db$`Percentage nonzero weights`))
+    
   
-  
+    p1 + p2
+#
+    neighb <- spdep::poly2nb( data$geometry
+                            , queen = TRUE
+                            , row.names = data$id_mz
+                            , snap = 10
+                            )
+    
+    neighb
+    
 # Convert the neighbors list to a binary adjacency matrix
 adj_matrix <- nb2mat(neighb, style = "B" , zero.policy = TRUE)
 
 #  poly2nb function defaulting to the queen criterion
     # Neighbour list object:
-    #   Number of regions: 13576 
-    # Number of nonzero links: 68 
-    # Percentage nonzero weights: 0.00003689 
-    # Average number of links: 0.005009 
-    # 13509 regions with no links:
+    #   Number of regions: 11439 
+    # Number of nonzero links: 34008 
+    # Percentage nonzero weights: 0.02599 
+    # Average number of links: 2.973 
+    # 1151 regions with no links:
 
 spdep::is.symmetric.nb(neighb)
 # [1] TRUE
@@ -300,20 +327,20 @@ st_relate(data_clean)[,1]
 # 2 denotes a spatial intersection of dimension 2 (i.e., an area).
 # 1 denotes a spatial intersection of dimension 1 (i.e., a line).
 
-# Function finds pattern: FF2FF1212
+# Function finds pattern: 2FFF1FFF2
 
-st_queen <- function(a, b = a) st_relate(a, b, pattern = "F***T****")
-data_clean %>% mutate(NB_QUEEN = st_queen(.))
-
-
-st_rook = function(a, b = a) st_relate(a, b, pattern = "F***1****")
-data_clean %>% mutate(NB_ROOK = st_rook(.))
+# st_queen <- function(a, b = a) st_relate(a, b, pattern = "F***T****")
+# data_clean %>% mutate(NB_QUEEN = st_queen(.))
+# 
+# 
+# st_rook = function(a, b = a) st_relate(a, b, pattern = "F***1****")
+# data_clean %>% mutate(NB_ROOK = st_rook(.))
 
 
 # Group by link ID and union the polygons
-data_linked <- data_clean %>%
-               group_by(id_mz) %>%
-               summarise(geometry = st_union(geometry), do_union = FALSE)
+# data_linked <- data_clean %>%
+#                group_by(id_mz) %>%
+#                summarise(geometry = st_union(geometry), do_union = FALSE)
 
 # coords <- st_coordinates(st_centroid(st_geometry(data)))
 # coords <- st_coordinates(data)
@@ -328,22 +355,6 @@ data_linked <- data_clean %>%
 # explore a further possible source of differences in neighbour object reproduction,
 # using the original version of the tract boundaries used in ASDAR, but with some 
 # invalid geometries as mentioned earlier
-
-# Check if file with valid geometries in to ‘sf’ and ‘sp’ objects:
-table(st_is_valid(data))
-    
-    # FALSE   TRUE 
-    # 14      106674
-
-# Using st_make_valid() to make the geometries valid:
-
-  data_clean <- st_make_valid(data)
-  table(st_is_valid(data_clean))
-      
-    # TRUE 
-    # 106688
-
-# Differences in geometry type
 
 class(st_geometry(data))
     # [1] "sfc_MULTIPOLYGON"
@@ -377,55 +388,13 @@ data_clean <- st_cast(data_clean, "POLYGON")
 
 # Create neighbors--------------------------------------------------------------
 
-# Neighbours based on contiguity
-reps <- 10
-eps <- sqrt(.Machine$double.eps)
 
-system.time(for(i in 1:reps) neighb_clean <- spdep::poly2nb( data_clean
-                                                           , row.names = "id_mz"
-                                                           , queen = TRUE
-                                                           , useC = TRUE
-                                                           # , snap = eps
-                                                          )
-            )/reps
-
-    # user  system elapsed
-    # 14.755   0.211  36.502
-
-neighb_clean
-
-    # Neighbour list object:
-    # Number of regions: 106688
-    # Number of nonzero links: 168
-    # Percentage nonzero weights: 0.000001476
-    # Average number of links: 0.001575
-
-    #Disjoint connected subgraphs
-
-head(neighb_clean)
-
-spdep::is.symmetric.nb(neighb_clean)
-# [1] FALSE
-
-# Create a vector indicating whether each polygon has at least one neighbor
-has_neighb_clean <- sapply(neighb, function(x) length(x) > 0)
-
-# Subset the polygons that have at least one neighbor
-data_clean_nb <- data_clean[has_neighb_clean, ]
-
-reps <- 10
-eps <- sqrt(.Machine$double.eps)
-system.time(for(i in 1:reps) neighb_clean_nb <- spdep::poly2nb( data_clean_nb
-                                                               , row.names = "id_mz"
-                                                               , queen = TRUE
-                                                               , useC = TRUE
-                                                               # , snap = eps
-                                                               )
-          )/reps
-
-    # user  system elapsed 
-    # 8.983   0.313  19.864 
-
+neighb_clean_nb <- spdep::poly2nb(  data_clean
+                                   , row.names = "id_mz"
+                                   , queen = TRUE
+                                   , useC = TRUE
+                                   , snap = 10
+                                )
 neighb_clean_nb
 
     # Neighbour list object:
@@ -435,11 +404,24 @@ neighb_clean_nb
     # Average number of links: 0.00545 
     # 13509 regions with no links:
 
+# Create a vector indicating whether each polygon has at least one neighbor
+has_neighb_clean <- sapply(neighb_clean_nb, function(x) length(x) > 0)
+
+# Subset the polygons that have at least one neighbor
+data_clean <- data_clean[has_neighb_clean, ]
+
+
+
+
+# Convert the neighbors list to a binary adjacency matrix
+adj_matrix <- nb2mat(neighb_clean_nb, style = "B" , zero.policy = FALSE)
+
+
 #Disjoint connected subgraphs
 
-head(neighb_clean_nb)
+head(adj_matrix)
 
-spdep::is.symmetric.nb(neighb_clean_nb)
+spdep::is.symmetric.nb(adj_matrix)
 
 
 plot(st_geometry(data_clean_nb), border = "lightgray")
@@ -452,40 +434,40 @@ table(1:nrow(neighb_clean_nb), card(neighb_clean_nb))
 
 
 # Compute the k-nearest neighbors
-
-coords <- st_centroid(st_geometry(data_clean), of_largest_polygon = TRUE)
-data_clean.knn <- knearneigh(st_centroid(coords, k = 4))
-
-plot(coords, border = "red")
-plot(knn2nb(data_clean.knn), coords, add = TRUE)
-title(main="K nearest neighbours, k = 4")
-
-# Convert the k-nearest neighbors object to a neighbors list
-neighb_clean <- knn2nb(data_clean.knn)
-
-spdep::is.symmetric.nb(neighb_clean)
-# [1] FALSE
-
-# Convert the neighbors list to a neighbors list object
-lw = spdep::nb2listw(neighb_clean, style="B", zero.policy=TRUE) 
-#row standardised (sums over all links to n)
-
-lw
-  
-  # Neighbour list object:
-  # Number of regions: 13579 
-  # Number of nonzero links: 13579 
-  # Percentage nonzero weights: 0.007364 
-  # Average number of links: 1 
-  # Non-symmetric neighbours list
-
-  # Weights style: B 
-  # Weights constants summary:
-  #   n        nn    S0    S1    S2
-  # B 13579 184389241 13579 21377 63304
-
-# Convert the neighbors list object to a matrix
-W = spdep::listw2mat(lw)
+# 
+# coords <- st_centroid(st_geometry(data_clean), of_largest_polygon = TRUE)
+# data_clean.knn <- knearneigh(st_centroid(coords, k = 4))
+# 
+# plot(coords, border = "red")
+# plot(knn2nb(data_clean.knn), coords, add = TRUE)
+# title(main="K nearest neighbours, k = 4")
+# 
+# # Convert the k-nearest neighbors object to a neighbors list
+# neighb_clean <- knn2nb(data_clean.knn)
+# 
+# spdep::is.symmetric.nb(neighb_clean)
+# # [1] FALSE
+# 
+# # Convert the neighbors list to a neighbors list object
+# lw = spdep::nb2listw(neighb_clean, style="B", zero.policy=TRUE) 
+# #row standardised (sums over all links to n)
+# 
+# lw
+#   
+#   # Neighbour list object:
+#   # Number of regions: 13579 
+#   # Number of nonzero links: 13579 
+#   # Percentage nonzero weights: 0.007364 
+#   # Average number of links: 1 
+#   # Non-symmetric neighbours list
+# 
+#   # Weights style: B 
+#   # Weights constants summary:
+#   #   n        nn    S0    S1    S2
+#   # B 13579 184389241 13579 21377 63304
+# 
+# # Convert the neighbors list object to a matrix
+# W = spdep::listw2mat(lw)
 
 # write.table(W, "spatialW.csv", sep=",", col.names=F, row.names=F)
 # data_clean@data$id <- seq(1:dim(data_clean@data)[1])
@@ -508,17 +490,17 @@ W = spdep::listw2mat(lw)
 # neighb_clean_mat[1:10, 1:10]
 
 # # Subsetting for only polygons with neighbours
-# data_clean_sub <- data_clean %>%
-#                    mutate(INTERSECT = st_intersects(.))
+data_clean_sub <- data_clean %>%
+                   mutate(INTERSECT = st_intersects(.))
 
 # # Check if the number of polygons has been reduced
 # nrow(data) - nrow(data_clean_sub) #0
 
-# Create a neighbors list using the poly2nb function
-nb <- poly2nb(data_clean, queen = TRUE)
-
-# Convert the neighbors list to a binary adjacency matrix
-adj_matrix <- nb2mat(nb, style = "B", zero.policy = TRUE)
+# # Create a neighbors list using the poly2nb function
+# nb <- poly2nb(data_clean, queen = TRUE)
+# 
+# # Convert the neighbors list to a binary adjacency matrix
+# adj_matrix <- nb2mat(nb, style = "B", zero.policy = TRUE)
 
 
 
@@ -536,7 +518,7 @@ n.trials <- 'POP' #total population (per block)
 frontier_model <- frontier_detect(  y = y
                                   , data = data_clean
                                   , n.trials = n.trials
-                                  , W.nb = neighb_clean #neighbourhood matrix indicating which elements of data are adjacent to each other.
+                                  , W.nb = neighb_clean_nb #neighbourhood matrix indicating which elements of data are adjacent to each other.
                                   , zero.policy = TRUE
                                   , verbose = TRUE
                                   )
