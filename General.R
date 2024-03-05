@@ -22,19 +22,20 @@
 
 ## Load required packages ----
 
-if (!require("pacman","groundhog")) {
+if (!require("pacman","groundhog", "here")) {
   
-  install.packages(c("pacman","groundhog"))
+  install.packages(c("pacman","groundhog", "here"))
 }
 
 library(pacman)
 
 # install.packages("groundhog")
 library("groundhog")
+set.groundhog.folder(here("groundhog_library"))
 groundhog.day = "2020-05-12"
 #Dowloaded fromn https://github.com/CredibilityLab/groundhog
 
-pkgs = c("here", "dplyr", "tidyverse", "janitor", "sf"
+pkgs = c("dplyr", "tidyverse", "janitor", "sf"
          , "tmap", "devtools", "renv", "Hmisc", "ggplot2"
          , "xfun", "remotes", "sp", "spdep", "maptools"
          , "foreach", "doParallel", "parallel", "progress"
